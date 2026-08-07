@@ -411,11 +411,22 @@ PlasmoidItem {
                     spacing: 1
 
                     Repeater {
-                        model: root.groups
+                        // The model is the row COUNT, not the array itself. Assigning
+                        // a fresh array every poll would destroy and rebuild every
+                        // delegate, and a newly-built Rectangle starts at width 0 —
+                        // so each refresh visibly animated the bars up from nothing.
+                        // An int model keeps the delegates alive, so the bindings
+                        // just update and Behavior animates from the previous value.
+                        model: root.groups.length
                         delegate: ColumnLayout {
                             id: groupRow
-                            required property var modelData
-                            readonly property bool isOpen: root.openGroup === modelData.name
+                            required property int index
+                            // Never null: a blank stand-in keeps every binding below
+                            // total, rather than needing a guard apiece.
+                            readonly property var g: index < root.groups.length
+                                ? root.groups[index]
+                                : ({ name: "", kb: 0, procs: 0, items: [], is_other: true })
+                            readonly property bool isOpen: g.name !== "" && root.openGroup === g.name
                             Layout.fillWidth: true
                             spacing: 0
 
@@ -428,7 +439,7 @@ PlasmoidItem {
                                     anchors.left: parent.left
                                     anchors.verticalCenter: parent.verticalCenter
                                     height: parent.height
-                                    width: parent.width * root.shareOfMax(groupRow.modelData.kb) / 100
+                                    width: parent.width * root.shareOfMax(groupRow.g.kb) / 100
                                     radius: 2
                                     color: Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
                                                    Kirigami.Theme.highlightColor.b, 0.22)
@@ -445,10 +456,10 @@ PlasmoidItem {
                                     id: rowMouse
                                     anchors.fill: parent
                                     hoverEnabled: true
-                                    cursorShape: groupRow.modelData.is_other ? Qt.ArrowCursor : Qt.PointingHandCursor
+                                    cursorShape: groupRow.g.is_other ? Qt.ArrowCursor : Qt.PointingHandCursor
                                     onClicked: {
-                                        if (groupRow.modelData.is_other) return
-                                        root.openGroup = groupRow.isOpen ? "" : groupRow.modelData.name
+                                        if (groupRow.g.is_other) return
+                                        root.openGroup = groupRow.isOpen ? "" : groupRow.g.name
                                     }
                                 }
 
@@ -462,29 +473,29 @@ PlasmoidItem {
                                         source: groupRow.isOpen ? "go-down-symbolic" : "go-next-symbolic"
                                         implicitWidth: Kirigami.Units.iconSizes.small
                                         implicitHeight: Kirigami.Units.iconSizes.small
-                                        opacity: groupRow.modelData.is_other ? 0 : (rowMouse.containsMouse || groupRow.isOpen ? 0.7 : 0.3)
+                                        opacity: groupRow.g.is_other ? 0 : (rowMouse.containsMouse || groupRow.isOpen ? 0.7 : 0.3)
                                     }
                                     PlasmaComponents3.Label {
-                                        text: groupRow.modelData.name
+                                        text: groupRow.g.name
                                         elide: Text.ElideRight
                                         Layout.maximumWidth: Kirigami.Units.gridUnit * 10
                                         font.bold: groupRow.isOpen
                                     }
                                     PlasmaComponents3.Label {
-                                        text: "×" + groupRow.modelData.procs
-                                        visible: groupRow.modelData.procs > 1
+                                        text: "×" + groupRow.g.procs
+                                        visible: groupRow.g.procs > 1
                                         opacity: 0.5
                                         font.pointSize: Kirigami.Theme.smallFont.pointSize
                                     }
                                     Item { Layout.fillWidth: true }
                                     PlasmaComponents3.Label {
-                                        text: Math.round(root.shareOfTotal(groupRow.modelData.kb)) + "%"
+                                        text: Math.round(root.shareOfTotal(groupRow.g.kb)) + "%"
                                         opacity: 0.55
                                         font.pointSize: Kirigami.Theme.smallFont.pointSize
                                         font.features: { "tnum": 1 }
                                     }
                                     PlasmaComponents3.Label {
-                                        text: root.fmtKb(groupRow.modelData.kb)
+                                        text: root.fmtKb(groupRow.g.kb)
                                         font.bold: true
                                         font.features: { "tnum": 1 }
                                         horizontalAlignment: Text.AlignRight
@@ -496,7 +507,7 @@ PlasmoidItem {
                             // per-process detail — what tells nine identical
                             // sessions of the same program apart
                             Repeater {
-                                model: groupRow.isOpen ? groupRow.modelData.items : []
+                                model: groupRow.isOpen ? groupRow.g.items : []
                                 delegate: RowLayout {
                                     required property var modelData
                                     Layout.fillWidth: true
@@ -537,8 +548,8 @@ PlasmoidItem {
                             PlasmaComponents3.Label {
                                 Layout.leftMargin: Kirigami.Units.gridUnit + Kirigami.Units.smallSpacing
                                 visible: groupRow.isOpen
-                                         && groupRow.modelData.procs > groupRow.modelData.items.length
-                                text: "+ " + (groupRow.modelData.procs - groupRow.modelData.items.length)
+                                         && groupRow.g.procs > groupRow.g.items.length
+                                text: "+ " + (groupRow.g.procs - groupRow.g.items.length)
                                       + " smaller, not shown"
                                 opacity: 0.45
                                 font.pointSize: Kirigami.Theme.smallFont.pointSize
