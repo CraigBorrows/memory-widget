@@ -1,0 +1,16 @@
+{
+    "KPlugin": {
+        "Id": "com.cbo.memusage",
+        "Name": "Memory Usage",
+        "Description": "RAM usage as a percentage, with a per-application breakdown on click",
+        "Authors": [
+            { "Name": "Craig Borrows", "Email": "cbo@nube-io.com" }
+        ],
+        "Category": "System Information",
+        "Icon": "memory",
+        "License": "MIT",
+        "Version": "1.0"
+    },
+    "KPackageStructure": "Plasma/Applet",
+    "X-Plasma-API-Minimum-Version": "6.0"
+}
