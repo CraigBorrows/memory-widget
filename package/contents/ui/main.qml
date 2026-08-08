@@ -94,20 +94,31 @@ PlasmoidItem {
         }
     }
 
-    // The trailing shell comment gives every run a unique source name —
+    // The trailing shell comment gives every run a distinct source name —
     // reconnecting an identical source name is a no-op, which would silently
     // swallow manual refreshes.
+    //
+    // The counter WRAPS, and must. Plasma5Support exposes source names through a
+    // QQmlPropertyMap backed by a QQmlOpenMetaObject, which is append-only: every
+    // name ever used stays a property forever (removeSource → clear() → setValue
+    // → createProperty *adds* one), and each connect/disconnect calls
+    // QMetaObjectBuilder::toMetaObject() to rebuild the metaobject over all of
+    // them. An unbounded counter makes each 3 s poll O(polls so far) — after a
+    // day of uptime plasmashell's main thread sat pinned at 100% rebuilding a
+    // ~28k-property metaobject, and the panel lagged. Wrapping keeps the cost
+    // constant; 8 × 3 s means a name is reused only after 24 s, long after its
+    // DataContainer is gone, so refreshes still never collapse into a no-op.
     function refresh() {
         root.busy = true
-        root.fetchSeq += 1
+        root.fetchSeq = (root.fetchSeq + 1) % 8
         execSummary.connectSource(root.cmd + " # " + root.fetchSeq)
     }
     function refreshProcs() {
-        root.fetchSeq += 1
+        root.fetchSeq = (root.fetchSeq + 1) % 8
         execProcs.connectSource(root.cmd + " --procs # " + root.fetchSeq)
     }
     function openSystemMonitor() {
-        root.fetchSeq += 1
+        root.fetchSeq = (root.fetchSeq + 1) % 8
         execSummary.connectSource("plasma-systemmonitor >/dev/null 2>&1 & # " + root.fetchSeq)
         root.expanded = false
     }

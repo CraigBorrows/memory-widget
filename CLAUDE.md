@@ -69,8 +69,17 @@ Everything comes from `/proc` — no external deps, no root.
 - Two `DataSource`s on purpose: the panel polls the cheap summary every 3 s,
   and the 400 ms process scan runs every 5 s **only while the popup is open**
   (`running: root.expanded`). Don't merge them.
-- Manual refresh appends `" # <seq>"` to the command so each run is a distinct
-  DataSource source — without that, reconnecting the same source name is a
-  no-op and the forced refresh silently does nothing.
+- Every run appends `" # <seq>"` to the command so it is a distinct DataSource
+  source — without that, reconnecting the same source name is a no-op and a
+  forced refresh silently does nothing. **`seq` wraps at 8 — never make it
+  unbounded.** Plasma5Support keeps source names in a `QQmlPropertyMap` backed
+  by an append-only `QQmlOpenMetaObject`: every name ever used stays a property
+  forever (and *removing* a source adds one — `removeSource` → `clear()` →
+  `setValue` → `createProperty`), while both connect and disconnect rebuild the
+  whole metaobject via `QMetaObjectBuilder::toMetaObject()`. Unbounded, the 3 s
+  poll costs O(polls so far); after ~23 h this widget plus `cpu-widget` had
+  ~28k names each and plasmashell's main thread was pinned at 100% with 1.3 GB
+  RSS, lagging the panel while the rest of the machine was fine. Wrapping keeps
+  it constant, and 8 × 3 s still leaves 24 s before a name is reused.
 - Clicking a table row expands it to individual PIDs with tty and uptime;
   middle-click on the panel opens System Monitor.
