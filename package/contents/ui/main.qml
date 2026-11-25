@@ -27,6 +27,9 @@ PlasmoidItem {
     property bool busy: false
     property int fetchSeq: 0
     property string openGroup: ""   // table row expanded to show individual PIDs
+    property bool cleanArmed: false // "Clear" clicked once — next click deletes
+    property bool cleaning: false
+    property string cleanMsg: ""    // "Freed …" shown briefly on the tmp row
 
     Plasmoid.icon: "memory"
     toolTipMainText: mem ? (Math.round(mem.pct) + "% memory in use") : "Memory"
@@ -90,6 +93,13 @@ PlasmoidItem {
                 root.rssFallback = p.rss_fallback ? p.rss_fallback : 0
                 root.procCount = p.proc_count ? p.proc_count : 0
                 root.errorMsg = ""
+                if (p.cleaned) {
+                    root.cleaning = false
+                    root.cleanMsg = p.cleaned.error ? "Couldn't delete: " + p.cleaned.error
+                                  : "Freed " + root.fmtKb(p.cleaned.freed_kb) + " from "
+                                    + p.cleaned.count + " session" + (p.cleaned.count === 1 ? "" : "s")
+                    cleanMsgTimer.restart()
+                }
             } catch (e) { /* keep the last good table */ }
         }
     }
@@ -117,6 +127,13 @@ PlasmoidItem {
         root.fetchSeq = (root.fetchSeq + 1) % 8
         execProcs.connectSource(root.cmd + " --procs # " + root.fetchSeq)
     }
+    // Deletes and rescans in one helper run, so the table updates with the result.
+    function cleanClaudeTmp() {
+        root.cleanArmed = false
+        root.cleaning = true
+        root.fetchSeq = (root.fetchSeq + 1) % 8
+        execProcs.connectSource(root.cmd + " --clean-claude-tmp --procs # " + root.fetchSeq)
+    }
     function openSystemMonitor() {
         root.fetchSeq = (root.fetchSeq + 1) % 8
         execSummary.connectSource("plasma-systemmonitor >/dev/null 2>&1 & # " + root.fetchSeq)
@@ -126,6 +143,9 @@ PlasmoidItem {
     Timer { interval: root.pollMs; running: !root.expanded; repeat: true; triggeredOnStart: true; onTriggered: root.refresh() }
     Timer { interval: root.procPollMs; running: root.expanded; repeat: true; triggeredOnStart: true; onTriggered: root.refreshProcs() }
     Timer { interval: 15000; running: root.busy; repeat: false; onTriggered: root.busy = false }
+    Timer { interval: 4000; running: root.cleanArmed; repeat: false; onTriggered: root.cleanArmed = false }
+    Timer { interval: 30000; running: root.cleaning; repeat: false; onTriggered: root.cleaning = false }
+    Timer { id: cleanMsgTimer; interval: 6000; repeat: false; onTriggered: root.cleanMsg = "" }
 
     onExpandedChanged: if (!expanded) openGroup = ""
 
@@ -498,6 +518,39 @@ PlasmoidItem {
                                         opacity: 0.5
                                         font.pointSize: Kirigami.Theme.smallFont.pointSize
                                     }
+                                    // tmp row: how much of it belongs to sessions that are gone
+                                    PlasmaComponents3.Label {
+                                        visible: groupRow.g.is_tmp === true
+                                                 && (root.cleanMsg !== "" || (groupRow.g.ended_kb || 0) > 0)
+                                        text: root.cleanMsg !== "" ? root.cleanMsg
+                                              : root.fmtKb(groupRow.g.ended_kb) + " from ended sessions"
+                                        color: root.cleanMsg !== "" ? Kirigami.Theme.positiveTextColor
+                                                                    : Kirigami.Theme.neutralTextColor
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: 0
+                                        font.pointSize: Kirigami.Theme.smallFont.pointSize
+                                    }
+                                    // Two-click delete: the first click arms it for 4 s.
+                                    PlasmaComponents3.ToolButton {
+                                        visible: groupRow.g.is_tmp === true && (groupRow.g.ended_kb || 0) > 0
+                                        enabled: !root.cleaning
+                                        icon.name: "edit-delete"
+                                        text: root.cleanArmed ? ("Delete " + root.fmtKb(groupRow.g.ended_kb) + "?") : "Clear"
+                                        display: PlasmaComponents3.AbstractButton.TextBesideIcon
+                                        font.pointSize: Kirigami.Theme.smallFont.pointSize
+                                        implicitHeight: Kirigami.Units.gridUnit * 1.3
+                                        onClicked: {
+                                            if (root.cleanArmed) root.cleanClaudeTmp()
+                                            else root.cleanArmed = true
+                                        }
+                                        PlasmaComponents3.ToolTip.text: root.cleanArmed
+                                            ? "Click again to delete temp files of " + groupRow.g.ended + " ended Claude session"
+                                              + (groupRow.g.ended === 1 ? "" : "s")
+                                            : "Delete temp files of ended Claude sessions (live and recently-written ones are kept)"
+                                        PlasmaComponents3.ToolTip.visible: hovered
+                                        PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
+                                    }
                                     Item { Layout.fillWidth: true }
                                     PlasmaComponents3.Label {
                                         text: Math.round(root.shareOfTotal(groupRow.g.kb)) + "%"
@@ -526,7 +579,36 @@ PlasmoidItem {
                                     Layout.rightMargin: Kirigami.Units.smallSpacing
                                     spacing: Kirigami.Units.smallSpacing
 
+                                    // Claude temp rows: a session dir, not a process
+                                    readonly property bool isTmp: modelData.measured === "tmpfs"
                                     PlasmaComponents3.Label {
+                                        visible: parent.isTmp
+                                        text: modelData.label || ""
+                                        elide: Text.ElideMiddle
+                                        Layout.maximumWidth: Kirigami.Units.gridUnit * 9
+                                        opacity: modelData.status === "ended" ? 0.9 : 0.7
+                                        font.pointSize: Kirigami.Theme.smallFont.pointSize
+                                    }
+                                    PlasmaComponents3.Label {
+                                        visible: parent.isTmp && (modelData.session || "") !== ""
+                                        text: modelData.session || ""
+                                        opacity: 0.45
+                                        font.pointSize: Kirigami.Theme.smallFont.pointSize
+                                        font.family: "monospace"
+                                    }
+                                    PlasmaComponents3.Label {
+                                        visible: parent.isTmp && modelData.status !== "shared"
+                                        text: modelData.status === "live" ? ("live " + (modelData.tty || ("pid " + modelData.pid)))
+                                            : modelData.status === "recent" ? "no session · in use"
+                                            : "ended"
+                                        color: modelData.status === "ended" ? Kirigami.Theme.neutralTextColor
+                                             : modelData.status === "live" ? Kirigami.Theme.positiveTextColor
+                                             : Kirigami.Theme.textColor
+                                        opacity: modelData.status === "recent" ? 0.55 : 0.9
+                                        font.pointSize: Kirigami.Theme.smallFont.pointSize
+                                    }
+                                    PlasmaComponents3.Label {
+                                        visible: !parent.isTmp
                                         text: modelData.pid
                                         opacity: 0.55
                                         font.pointSize: Kirigami.Theme.smallFont.pointSize
@@ -534,12 +616,15 @@ PlasmoidItem {
                                     }
                                     PlasmaComponents3.Label {
                                         text: modelData.tty
-                                        visible: modelData.tty !== ""
+                                        visible: !parent.isTmp && modelData.tty !== ""
                                         opacity: 0.55
                                         font.pointSize: Kirigami.Theme.smallFont.pointSize
                                     }
                                     PlasmaComponents3.Label {
-                                        text: "up " + root.ageStr(modelData.age_s)
+                                        text: parent.isTmp
+                                              ? (modelData.age_s > 0 ? ("· " + root.ageStr(modelData.age_s) + " ago") : "")
+                                              : ("up " + root.ageStr(modelData.age_s))
+                                        visible: text !== ""
                                         opacity: 0.55
                                         font.pointSize: Kirigami.Theme.smallFont.pointSize
                                         font.features: { "tnum": 1 }
@@ -590,7 +675,8 @@ PlasmoidItem {
                 text: "Proportional set size — shared pages split between the processes sharing them"
                       + (root.rssFallback > 0 ? (", except " + root.rssFallback + " unreadable process"
                                                  + (root.rssFallback === 1 ? "" : "es") + " shown as RSS") : "")
-                      + ". Click a row for individual processes."
+                      + ". Claude temp files are tmpfs in /tmp, counted whether in RAM or swap."
+                      + " Click a row for individual processes."
             }
         }
     }
