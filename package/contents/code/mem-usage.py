@@ -427,14 +427,89 @@ def clean_claude_tmp():
     return {"freed_kb": freed, "count": count}
 
 
-def merge_tmp(groups, tmp):
-    """Rank the tmp row by size among the process groups, keeping Other last."""
-    if not tmp:
-        return groups
-    other = [g for g in groups if g.get("is_other")]
-    rest = [g for g in groups if not g.get("is_other")] + [tmp]
-    rest.sort(key=lambda g: g["kb"], reverse=True)
-    return rest + other
+# ---------- memory no process owns ----------
+#
+# Without these rows the table never adds up to "In use": leaked /dev/shm
+# segments (1.1 GB of CE test files once), kernel allocations and the zram
+# pool are real RAM that belongs to no process, so PSS can't see any of it.
+
+def labelled(label, kb, note="", age_s=0):
+    return {"pid": 0, "name": label, "kb": kb, "measured": "sys", "age_s": age_s,
+            "tty": "", "user": "", "label": label, "session": note, "status": "shared"}
+
+
+def shm_group():
+    """/dev/shm files grouped by name family (trailing ids stripped), so 300
+    ce_db_sig_<n>_<pid> files read as one line."""
+    fams, now = {}, time.time()
+    try:
+        entries = list(os.scandir("/dev/shm"))
+    except OSError:
+        return None
+    for e in entries:
+        try:
+            st = e.stat(follow_symlinks=False)
+        except OSError:
+            continue
+        kb = st.st_blocks // 2
+        if e.is_dir(follow_symlinks=False):
+            kb = tree_usage(e.path)[0] + kb
+        fam = re.sub(r"[_.-]*\d.*$", "", e.name) or e.name
+        f = fams.setdefault(fam, [0, 0, 0.0])
+        f[0] += kb
+        f[1] += 1
+        f[2] = max(f[2], st.st_mtime)
+    items = [labelled(k, v[0], ("%d files" % v[1]) if v[1] > 1 else "",
+                      int(max(0, now - v[2])))
+             for k, v in fams.items() if v[0] > 0]
+    if not items:
+        return None
+    items.sort(key=lambda p: p["kb"], reverse=True)
+    return {"name": "Shared memory (/dev/shm)", "kb": sum(p["kb"] for p in items),
+            "procs": sum(v[1] for v in fams.values()),
+            "items": items[:TOP_PROCS_PER_GROUP], "is_sys": True}
+
+
+def kernel_group(mi):
+    parts = [
+        ("Slab, unreclaimable", mi.get("SUnreclaim", 0)),
+        ("Page tables", mi.get("PageTables", 0) + mi.get("SecPageTables", 0)),
+        ("vmalloc", mi.get("VmallocUsed", 0)),
+        ("Per-CPU", mi.get("Percpu", 0)),
+        ("Kernel stacks", mi.get("KernelStack", 0)),
+    ]
+    items = [labelled(k, v) for k, v in parts if v > 0]
+    items.sort(key=lambda p: p["kb"], reverse=True)
+    return {"name": "Kernel", "kb": sum(p["kb"] for p in items), "procs": 1,
+            "items": items, "is_sys": True}
+
+
+def zram_group():
+    """The zram pool's own RAM: swapped-out pages live here, compressed."""
+    items = []
+    for dev in sorted(os.listdir("/sys/block")):
+        if not dev.startswith("zram"):
+            continue
+        try:
+            with open("/sys/block/%s/mm_stat" % dev) as f:
+                v = [int(x) for x in f.read().split()]
+        except (OSError, ValueError):
+            continue
+        if len(v) >= 3 and v[2] > 0:
+            items.append(labelled(dev, v[2] // 1024,
+                                  "holds %.1f GiB swapped" % (v[0] / 2**30)))
+    if not items:
+        return None
+    return {"name": "Compressed swap (zram)", "kb": sum(p["kb"] for p in items),
+            "procs": 1, "items": items, "is_sys": True}
+
+
+def merge_extra(groups, extras):
+    """Rank every row by size — extras and "Other" included — so the table
+    order is the real order, not "Other" pinned at the bottom."""
+    rows = groups + [g for g in extras if g]
+    rows.sort(key=lambda g: g["kb"], reverse=True)
+    return rows
 
 
 # ---------- main ----------
@@ -462,7 +537,14 @@ if "--procs" in sys.argv:
             tmp = claude_tmp_group()
         except Exception:
             tmp = None                         # never let this break the table
-        out["groups"] = merge_tmp(group(procs), tmp)
+        extras = [tmp]
+        for fn in (shm_group, lambda: kernel_group(meminfo()), zram_group):
+            try:
+                extras.append(fn())
+            except Exception:
+                pass                           # never let these break the table
+        out["groups"] = merge_extra(group(procs), extras)
+        out["unowned_kb"] = sum(g["kb"] for g in extras if g)
         out["tmp_kb"] = tmp["kb"] if tmp else 0
         out["proc_total_kb"] = sum(p["kb"] for p in procs)
         out["proc_count"] = len(procs)

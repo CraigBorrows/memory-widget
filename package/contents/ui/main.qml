@@ -193,8 +193,8 @@ PlasmoidItem {
     // Row bars are scaled against the biggest consumer, not against total RAM:
     // as a fraction of 47 GiB even the top process is a ~8% sliver, which reads
     // as noise rather than as a comparison. The % label still shows the honest
-    // share of total. groups[0] is the largest — the helper sorts descending and
-    // appends "Other" last.
+    // share of total. groups[0] is the largest — the helper sorts every row,
+    // "Other" included, descending.
     function shareOfMax(kb) {
         if (!groups || groups.length === 0) return 0
         var max = groups[0].kb
@@ -579,8 +579,10 @@ PlasmoidItem {
                                     Layout.rightMargin: Kirigami.Units.smallSpacing
                                     spacing: Kirigami.Units.smallSpacing
 
-                                    // Claude temp rows: a session dir, not a process
-                                    readonly property bool isTmp: modelData.measured === "tmpfs"
+                                    // Labelled rows aren't processes: Claude session dirs
+                                    // (tmpfs), /dev/shm families, kernel and zram parts.
+                                    readonly property bool isTmp: modelData.label !== undefined
+                                    readonly property bool isSession: modelData.measured === "tmpfs"
                                     PlasmaComponents3.Label {
                                         visible: parent.isTmp
                                         text: modelData.label || ""
@@ -594,10 +596,10 @@ PlasmoidItem {
                                         text: modelData.session || ""
                                         opacity: 0.45
                                         font.pointSize: Kirigami.Theme.smallFont.pointSize
-                                        font.family: "monospace"
+                                        font.family: parent.isSession ? "monospace" : Kirigami.Theme.defaultFont.family
                                     }
                                     PlasmaComponents3.Label {
-                                        visible: parent.isTmp && modelData.status !== "shared"
+                                        visible: parent.isSession && modelData.status !== "shared"
                                         text: modelData.status === "live" ? ("live " + (modelData.tty || ("pid " + modelData.pid)))
                                             : modelData.status === "recent" ? "no session · in use"
                                             : "ended"
@@ -675,7 +677,8 @@ PlasmoidItem {
                 text: "Proportional set size — shared pages split between the processes sharing them"
                       + (root.rssFallback > 0 ? (", except " + root.rssFallback + " unreadable process"
                                                  + (root.rssFallback === 1 ? "" : "es") + " shown as RSS") : "")
-                      + ". Claude temp files are tmpfs in /tmp, counted whether in RAM or swap."
+                      + ". Claude temp files and /dev/shm are tmpfs, counted whether in RAM or swap;"
+                      + " Kernel and zram rows are RAM no process owns."
                       + " Click a row for individual processes."
             }
         }
